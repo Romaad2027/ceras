@@ -1,0 +1,93 @@
+@import "tailwindcss";
+@import "./light.css";
+@import "./dark.css";
+@import "./dark-mc.css";
+@import "./dark-hc.css";
+@import "./light-mc.css";
+@import "./light-hc.css";
+
+:root {
+  /* Primary - Moss Green / Olive tones */
+  --color-primary: 90 117 57;          /* rgb(90 117 57) */
+  --color-on-primary: 255 255 255;
+  --color-primary-container: 205 237 163; /* Lighter green for active states */
+  --color-on-primary-container: 53 78 22;
+
+  /* Secondary - Muted Green */
+  --color-secondary: 102 113 87;
+  --color-on-secondary: 255 255 255;
+  --color-secondary-container: 220 231 200;
+
+  /* Surfaces & Backgrounds */
+  /* Main app background - slightly warmer/greyer */
+  --color-background: 243 244 233;     /* surface-container-low */
+  --color-on-background: 26 28 22;
+
+  /* Card background - White/Lightest */
+  --color-surface: 255 255 255;        /* surface-container-lowest */
+  --color-on-surface: 26 28 22;
+
+  /* Inputs / Secondary areas */
+  --color-surface-variant: 232 233 222; /* surface-container */
+  --color-on-surface-variant: 68 72 61;
+
+  /* Borders */
+  --color-outline: 117 121 108;
+  --color-outline-variant: 209 211 200;
+
+  /* Functional */
+  --color-error: 186 26 26;
+}
+
+/* Base: Modern Light & Clean */
+
+/* Reset a few opinionated Vite template styles and make layout full-width */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100dvh;
+  background-color: var(--md-sys-color-background);
+  color: var(--md-sys-color-on-background);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu,
+    Cantarell, "Noto Sans", "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Root should span the full viewport and center content */
+#root {
+  width: 100%;
+  min-height: 100dvh;
+}
+
+/* Subtle defaults for links and buttons, without constraining layout */
+a {
+  color: var(--md-sys-color-primary);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Utility: Glass Panel */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.7);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
