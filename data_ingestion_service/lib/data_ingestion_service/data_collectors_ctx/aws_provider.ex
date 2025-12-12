@@ -63,7 +63,6 @@ defmodule DataIngestionService.DataCollectorsCtx.AwsProvider do
     end
   end
 
-  # Helpers
   defp bucket_region(bucket) do
     case Aws.get_bucket_location(bucket) do
       {:ok, %{"LocationConstraint" => region}} ->

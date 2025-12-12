@@ -53,7 +53,6 @@ defmodule DataIngestionService.APIClient.Aws do
     end
   end
 
-  # Generic S3 bucket resource (e.g., policyStatus, publicAccessBlock, encryption, policy)
   def get_bucket_policy(bucket, region \\ nil) do
     ExAws.S3.get_bucket_policy(bucket)
     |> ExAws.request(region: region || System.get_env("AWS_REGION") || "eu-north-1")
