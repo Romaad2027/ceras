@@ -10,16 +10,10 @@ defmodule DataIngestionService.Schema.Organization do
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
-          name: String.t() | nil,
-          aws_access_key_id: String.t() | nil,
-          aws_secret_access_key: String.t() | nil,
-          aws_region: String.t() | nil
+          name: String.t() | nil
         }
 
   schema "organizations" do
     field(:name, :string)
-    field(:aws_access_key_id, :string)
-    field(:aws_secret_access_key, :string)
-    field(:aws_region, :string)
   end
 end

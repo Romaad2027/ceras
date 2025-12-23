@@ -5,16 +5,18 @@ defmodule DataIngestionService.GenericCloudIdentity do
 
   @derive Jason.Encoder
   @type t :: %__MODULE__{
-          arn: String.t() | nil,
+          identity_arn: String.t() | nil,
           name: String.t() | nil,
           type: :iam_user,
-          created_at: DateTime.t() | nil
+          created_at: DateTime.t() | nil,
+          organization_id: String.t() | nil
         }
 
   defstruct [
-    :arn,
+    :identity_arn,
     :name,
     :type,
-    :created_at
+    :created_at,
+    :organization_id
   ]
 end

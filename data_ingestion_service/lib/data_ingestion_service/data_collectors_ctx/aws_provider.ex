@@ -1,200 +1,179 @@
 defmodule DataIngestionService.DataCollectorsCtx.AwsProvider do
   @moduledoc false
 
-  alias DataIngestionService.CloudResource
+  alias DataIngestionService.AwsConfig
   alias DataIngestionService.APIClient.Aws
+  alias DataIngestionService.CloudResource
   alias DataIngestionService.DataCollectorsCtx.Transformers.AwsS3Normalizer
+  alias DataIngestionService.Schema.CloudAccount
+
   import SweetXml
 
-  @spec fetch_all_buckets_metadata() :: {:ok, [CloudResource.t()]} | {:error, term()}
-  def fetch_all_buckets_metadata() do
-    case fetch_all_buckets() do
-      {:ok, buckets} ->
-        resources =
-          Enum.map(buckets, fn %{name: bucket_name} = bkt ->
-            region = bucket_region(bucket_name)
+  @spec fetch_all_buckets_metadata(CloudAccount.t(), keyword()) ::
+          {:ok, [CloudResource.t()]} | {:error, term()}
+  def fetch_all_buckets_metadata(%CloudAccount{} = account, opts \\ []) do
+    IO.inspect(account, label: "fetch_all_buckets_metadata3232")
 
-            policy_json = fetch_policy_json(bucket_name, region)
-            policy_status = fetch_policy_status_json(bucket_name, region)
-            encryption = fetch_encryption_xml(bucket_name, region)
-            versioning = fetch_versioning_xml(bucket_name, region)
+    if credentials_available?(account) do
+      aws_config = AwsConfig.build_for_account(account)
 
-            normalized_config =
-              AwsS3Normalizer.build(%{
-                policy_status: policy_status,
-                policy_json: policy_json,
-                encryption: encryption,
-                versioning: versioning
-              })
+      region =
+        Keyword.get(opts, :region) ||
+          account.region ||
+          default_region()
 
-            %CloudResource{
-              resource_id: bucket_name,
-              resource_type: :storage_bucket,
-              cloud_provider: :aws,
-              account_id: System.get_env("AWS_ACCOUNT_ID") || "unknown",
-              configuration:
-                Map.merge(
-                  %{
-                    "bucket_name" => bucket_name,
-                    "creation_date" => Map.get(bkt, :creation_date),
-                    "region" => region
-                  },
-                  normalized_config
-                )
-            }
-          end)
+      case Aws.list_buckets(region, aws_config) do
+        {:ok, response, _} ->
+          build_resources(response, account, aws_config)
 
-        {:ok, resources}
-
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      IO.inspect(account, label: "missing_aws_credentials3232")
+      {:error, :missing_aws_credentials}
     end
   end
 
-  @spec fetch_all_buckets() :: {:ok, list(map())} | {:error, term()}
-  def fetch_all_buckets() do
-    case Aws.list_buckets("eu-north-1") do
-      {:ok, json, _xml} ->
-        buckets = extract_buckets(json)
-        {:ok, buckets}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  defp credentials_available?(%CloudAccount{credentials: creds}) do
+    AwsConfig.has_access_key_fields?(creds)
   end
 
-  defp bucket_region(bucket) do
-    case Aws.get_bucket_location(bucket) do
-      {:ok, %{"LocationConstraint" => region}} ->
-        if region in [nil, ""], do: "eu-north-1", else: region
+  defp credentials_available?(_), do: false
 
-      {:ok, %{LocationConstraint: region}} ->
-        if region in [nil, ""], do: "eu-north-1", else: region
-
-      {:ok, %{body: xml}} ->
-        s = to_string(xml)
-
-        case Regex.run(~r/<LocationConstraint>(.*?)<\/LocationConstraint>/, s,
-               capture: :all_but_first
-             ) do
-          ["" | _] -> "eu-north-1"
-          [region | _] -> region
-          _ -> "eu-north-1"
-        end
-
-      _ ->
-        "eu-north-1"
-    end
+  defp build_resources(response, account, aws_config) do
+    response
+    |> unwrap_response_body()
+    |> extract_buckets()
+    |> Enum.map(&build_bucket_resource(&1, account, aws_config))
+    |> then(&{:ok, &1})
   end
 
-  defp fetch_acl_json(bucket, region) do
-    case Aws.get_bucket_acl(bucket, region) do
-      {:ok, json, _xml} ->
-        json
+  defp build_bucket_resource(%{name: bucket_name} = bucket, account, aws_config) do
+    bucket_region = bucket_region(bucket_name, aws_config)
 
-      _ ->
-        nil
-    end
-  end
+    normalized_config =
+      AwsS3Normalizer.build(%{
+        policy_status: fetch_policy_status_json(bucket_name, bucket_region, aws_config),
+        policy_json: fetch_policy_json(bucket_name, bucket_region, aws_config),
+        encryption: fetch_encryption_json(bucket_name, bucket_region, aws_config),
+        versioning: fetch_versioning_json(bucket_name, bucket_region, aws_config)
+      })
 
-  defp fetch_policy_json(bucket, region) do
-    case Aws.get_bucket_policy(bucket, region) do
-      {:ok, %{body: json}} when is_binary(json) ->
-        Jason.decode(json)
-        |> case do
-          {:ok, decoded} -> decoded
-          _ -> nil
-        end
-
-      {:error, {:http_error, 404, _}} ->
-        nil
-
-      {:error, _} ->
-        nil
-
-      _ ->
-        nil
-    end
-  end
-
-  defp fetch_policy_status_json(bucket, region) do
-    case Aws.get_bucket_policy_status(bucket, region) do
-      {:ok, %{} = map} when is_map(map) ->
-        if Map.has_key?(map, :body) do
-          body_string = to_string(map.body)
-
-          case Jason.decode(body_string) do
-            {:ok, decoded} -> decoded
-            _ -> xpath(body_string, ~x"//PolicyStatus", is_public: ~x"./IsPublic/text()"s)
-          end
-        else
-          map
-        end
-
-      {:ok, %{body: body}} ->
-        body_string = to_string(body)
-
-        case Jason.decode(body_string) do
-          {:ok, decoded} -> decoded
-          _ -> xpath(body_string, ~x"//PolicyStatus", is_public: ~x"./IsPublic/text()"s)
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp fetch_public_access_block_xml(bucket, region) do
-    case Aws.get_public_access_block(bucket, region) do
-      {:ok, %{} = map} when is_map(map) ->
-        if Map.has_key?(map, :body) do
-          xml_string = to_string(map.body)
-
-          xpath(xml_string, ~x"//PublicAccessBlockConfiguration",
-            block_public_acls: ~x"./BlockPublicAcls/text()"s,
-            ignore_public_acls: ~x"./IgnorePublicAcls/text()"s,
-            block_public_policy: ~x"./BlockPublicPolicy/text()"s,
-            restrict_public_buckets: ~x"./RestrictPublicBuckets/text()"s
-          )
-        else
-          map
-        end
-
-      {:ok, %{body: xml}} ->
-        xml_string = to_string(xml)
-
-        xpath(xml_string, ~x"//PublicAccessBlockConfiguration",
-          block_public_acls: ~x"./BlockPublicAcls/text()"s,
-          ignore_public_acls: ~x"./IgnorePublicAcls/text()"s,
-          block_public_policy: ~x"./BlockPublicPolicy/text()"s,
-          restrict_public_buckets: ~x"./RestrictPublicBuckets/text()"s
+    %CloudResource{
+      resource_id: "arn:aws:s3:::#{bucket_name}",
+      resource_type: :storage_bucket,
+      cloud_provider: :aws,
+      account_id: account.id,
+      configuration:
+        Map.merge(
+          %{
+            "bucket_name" => bucket_name,
+            "creation_date" => Map.get(bucket, :creation_date),
+            "region" => bucket_region
+          },
+          normalized_config
         )
-
-      _ ->
-        nil
-    end
+    }
   end
 
-  defp fetch_encryption_xml(bucket, region) do
-    case Aws.get_bucket_encryption(bucket, region) do
-      {:ok, json, _xml} ->
-        json
-
-      _ ->
-        nil
-    end
-  end
-
-  defp fetch_versioning_xml(bucket, region) do
-    case Aws.get_bucket_versioning(bucket, region) do
-      {:ok, json, _xml} -> json
+  defp fetch_policy_json(bucket, region, aws_config) do
+    case Aws.get_bucket_policy(bucket, region, aws_config) do
+      {:ok, response} -> normalize_policy_json(response)
+      {:error, {:http_error, 404, _}} -> nil
       _ -> nil
     end
   end
 
+  defp fetch_policy_status_json(bucket, region, aws_config) do
+    case Aws.get_bucket_policy_status(bucket, region, aws_config) do
+      {:ok, response} -> normalize_policy_status(response)
+      _ -> nil
+    end
+  end
+
+  defp fetch_encryption_json(bucket, region, aws_config) do
+    case Aws.get_bucket_encryption(bucket, region, aws_config) do
+      {:ok, response, _} -> unwrap_response_body(response)
+      _ -> nil
+    end
+  end
+
+  defp fetch_versioning_json(bucket, region, aws_config) do
+    case Aws.get_bucket_versioning(bucket, region, aws_config) do
+      {:ok, response, _} -> unwrap_response_body(response)
+      _ -> nil
+    end
+  end
+
+  defp normalize_policy_json(response) do
+    response
+    |> unwrap_response_body()
+    |> case do
+      json when is_binary(json) -> decode_json(json)
+      map when is_map(map) -> map
+      _ -> nil
+    end
+  end
+
+  defp normalize_policy_status(response) do
+    response
+    |> unwrap_response_body()
+    |> case do
+      map when is_map(map) -> map
+      xml when is_binary(xml) -> decode_or_xpath_policy_status(xml)
+      _ -> nil
+    end
+  end
+
+  defp decode_or_xpath_policy_status(body_string) do
+    case Jason.decode(body_string) do
+      {:ok, decoded} -> decoded
+      _ -> xpath(body_string, ~x"//PolicyStatus", is_public: ~x"./IsPublic/text()"s)
+    end
+  end
+
+  defp decode_json(json) do
+    case Jason.decode(json) do
+      {:ok, decoded} -> decoded
+      _ -> nil
+    end
+  end
+
+  defp bucket_region(bucket, aws_config) do
+    case Aws.get_bucket_location(bucket, nil, aws_config) do
+      {:ok, response, _} ->
+        response
+        |> unwrap_response_body()
+        |> parse_location_response()
+
+      _ ->
+        default_region()
+    end
+  end
+
+  defp parse_location_response(%{"LocationConstraint" => region}), do: normalize_region(region)
+  defp parse_location_response(%{LocationConstraint: region}), do: normalize_region(region)
+
+  defp parse_location_response(region) when is_binary(region),
+    do: region |> to_string() |> extract_region_from_xml()
+
+  defp parse_location_response(_), do: default_region()
+
+  defp extract_region_from_xml(xml_string) do
+    case Regex.run(~r/<LocationConstraint>(.*?)<\/LocationConstraint>/, xml_string,
+           capture: :all_but_first
+         ) do
+      [region] when region not in ["", nil] -> region
+      _ -> default_region()
+    end
+  end
+
+  defp normalize_region(nil), do: default_region()
+  defp normalize_region(""), do: default_region()
+  defp normalize_region(region), do: region
+
   defp extract_buckets(resp) do
-    # Normalize various shapes from the aws library into
-    # a list of %{name: String.t(), creation_date: String.t() | nil}
     cond do
       is_map(resp) and Map.has_key?(resp, "ListAllMyBucketsResult") ->
         resp
@@ -234,5 +213,13 @@ defmodule DataIngestionService.DataCollectorsCtx.AwsProvider do
       creation_date = Map.get(bucket, "CreationDate") || Map.get(bucket, :creation_date)
       %{name: name, creation_date: creation_date}
     end)
+  end
+
+  defp unwrap_response_body(%{body: body}) when not is_nil(body), do: body
+  defp unwrap_response_body(value), do: value
+
+  defp default_region do
+    Application.get_env(:data_ingestion_service, DataIngestionService.APIClient.Aws, [])
+    |> Keyword.get(:region) || "eu-north-1"
   end
 end

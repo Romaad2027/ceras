@@ -25,6 +25,7 @@ defmodule DataIngestionService.Schema.CloudAccount do
     field(:provider, :string)
     field(:credentials, :map)
     field(:is_active, :boolean, default: false)
+    field(:region, :string)
     belongs_to(:organization, Organization)
   end
 end

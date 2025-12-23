@@ -1,80 +1,127 @@
 defmodule DataIngestionService.Workers.IamPoller do
   @moduledoc """
-  GenServer that periodically polls AWS IAM identities and forwards them to Kafka for a given organization.
+  Oban worker that polls AWS IAM identities for each registered AWS cloud account.
   """
 
-  use GenServer
+  use Oban.Worker,
+    queue: :iam,
+    max_attempts: 3,
+    unique: [period: :timer.minutes(1)]
+
+  require Logger
 
   alias DataIngestionService.KafkaProducer
   alias DataIngestionService.Providers.IamProvider
+  alias DataIngestionService.Repo
+  alias DataIngestionService.Schema.CloudAccount
 
-  @type state :: %{
-          org: map(),
-          interval_ms: non_neg_integer()
-        }
-
-  @default_interval_ms :timer.minutes(10)
   @topic "cloud_identities"
 
-  @spec child_spec(map()) :: Supervisor.child_spec()
-  def child_spec(org) when is_map(org) do
-    org_id = org[:id] || org["id"]
+  @impl Oban.Worker
+  def perform(%Oban.Job{}) do
+    Logger.info("IAM poller started")
 
-    %{
-      id: {:iam_poller, org_id},
-      start: {__MODULE__, :start_link, [org]},
-      restart: :permanent,
-      shutdown: 5_000,
-      type: :worker
-    }
+    aws_accounts()
+    |> Enum.each(&poll_account/1)
+
+    Logger.info("IAM poller finished")
+
+    :ok
   end
 
-  @spec start_link(map()) :: GenServer.on_start()
-  def start_link(%{id: id} = org) when is_binary(id) do
-    GenServer.start_link(__MODULE__, org, name: via_tuple(id))
+  defp aws_accounts do
+    import Ecto.Query
+
+    CloudAccount
+    |> where([a], a.is_active == true)
+    |> Repo.all()
+    |> IO.inspect(label: "aws_accounts")
+    |> Enum.filter(&(normalize_provider(&1.provider) == "AWS"))
   end
 
-  def start_link(%{"id" => id} = org) when is_binary(id) do
-    GenServer.start_link(__MODULE__, org, name: via_tuple(id))
-  end
+  defp poll_account(%CloudAccount{
+         id: account_id,
+         credentials: creds,
+         region: region,
+         organization_id: organization_id
+       }) do
+    aws_config = build_aws_config(creds, region)
 
-  @impl true
-  @spec init(map()) :: {:ok, state()}
-  def init(org) when is_map(org) do
-    state = %{org: org, interval_ms: @default_interval_ms}
-    Process.send_after(self(), :tick, 0)
-    {:ok, state}
-  end
+    case aws_config do
+      [] ->
+        Logger.warning("Skipping IAM poll for account=#{account_id} due to missing credentials")
 
-  @impl true
-  def handle_info(:tick, %{org: org, interval_ms: interval_ms} = state) do
-    _ = fetch_and_publish(org)
-    Process.send_after(self(), :tick, interval_ms)
-    {:noreply, state}
-  end
-
-  defp via_tuple(org_id), do: {:via, Registry, {DataIngestionService.Registry, {:iam, org_id}}}
-
-  defp fetch_and_publish(org) do
-    aws_config = build_aws_config(org)
-
-    case IamProvider.fetch_identities(aws_config) do
-      {:ok, []} ->
-        :ok
-
-      {:ok, identities} ->
-        KafkaProducer.publish_events_to_topic(identities, @topic)
-
-      {:error, _reason} ->
-        :error
+      _ ->
+        Logger.info("Polling IAM for account=#{account_id}")
+        fetch_identities(account_id, aws_config, organization_id)
     end
   end
 
-  defp build_aws_config(org) when is_map(org) do
+  defp fetch_identities(account_id, aws_config, organization_id) do
+    case IamProvider.fetch_identities(aws_config, organization_id) do
+      {:ok, []} ->
+        Logger.info("No IAM identities found for account=#{account_id}")
+        :ok
+
+      {:ok, identities} ->
+        publish_identities(account_id, identities)
+
+      {:error, reason} ->
+        log_fetch_error(account_id, reason)
+    end
+  end
+
+  defp publish_identities(account_id, identities) do
+    IO.inspect(identities, label: "identities")
+
+    case KafkaProducer.publish_events_to_topic(identities, @topic) do
+      :ok ->
+        Logger.info("Published #{length(identities)} IAM identities for account=#{account_id}")
+        :ok
+
+      {:error, reason} ->
+        log_publish_error(account_id, reason)
+    end
+  end
+
+  defp build_aws_config(creds, region) when is_map(creds) do
     [
-      access_key_id: org[:aws_access_key_id] || org["aws_access_key_id"],
-      secret_access_key: org[:aws_secret_access_key] || org["aws_secret_access_key"],
-      region: org[:aws_region] || org["aws_region"]
+      access_key_id: credential_value(creds, :accessKeyId),
+      secret_access_key: credential_value(creds, :secretAccessKey),
+      region: region
     ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp build_aws_config(_, _), do: []
+
+  defp credential_value(creds, key_base) do
+    credential_keys(key_base)
+    |> Enum.find_value(fn key -> Map.get(creds, key) end)
+  end
+
+  defp credential_keys(base) when is_atom(base) do
+    candidate = Atom.to_string(base)
+
+    [candidate, "aws_#{candidate}"]
+    |> Enum.flat_map(fn variant ->
+      [String.to_atom(variant), variant]
+    end)
+  end
+
+  defp credential_keys(_), do: []
+
+  defp normalize_provider(nil), do: ""
+  defp normalize_provider(provider) when is_binary(provider), do: String.upcase(provider)
+  defp normalize_provider(provider), do: provider |> to_string() |> String.upcase()
+
+  defp log_fetch_error(account_id, reason) do
+    Logger.error("Failed to fetch IAM identities account=#{account_id} reason=#{inspect(reason)}")
+  end
+
+  defp log_publish_error(account_id, reason) do
+    Logger.error(
+      "Failed to publish IAM identities account=#{account_id} reason=#{inspect(reason)}"
+    )
   end
 end
