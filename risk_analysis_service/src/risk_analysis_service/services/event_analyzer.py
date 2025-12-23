@@ -36,7 +36,6 @@ class EventAnalyzerService:
         self.model = None
         self.scaler = None
 
-                        
         try:
             if self._scaler_path.exists():
                 self.scaler = load(self._scaler_path)
@@ -178,13 +177,11 @@ class EventAnalyzerService:
         df = pd.DataFrame.from_records(records)
         df = df.dropna(subset=["event_time"])
 
-                        
         status_series = df["status"].astype(str).str.strip().str.upper()
         df["is_failure"] = status_series.eq("FAILURE")
         action_series = df["action_name"].astype(str).str.strip().str.lower()
         df["is_critical_action"] = action_series.str.startswith(("delete", "terminate"))
 
-                     
         df["time_window"] = df["event_time"].dt.floor("h")
 
         grouped = df.groupby(["entity_id", "time_window"])
@@ -199,7 +196,6 @@ class EventAnalyzerService:
         is_night = ((window_hours <= 6) | (window_hours >= 21)).astype(int)
         features = features.assign(is_night=is_night)
 
-                                    
         features = features.astype(
             {
                 "event_count": "int64",
@@ -229,7 +225,6 @@ class EventAnalyzerService:
         if not events:
             return created_alerts
 
-                                                                                               
         entity_ids = {self._hybrid_entity_id(e) for e in events}
         target_resource_ids = {e.target_resource for e in events if e.target_resource}
         actor_arns = {
@@ -265,7 +260,6 @@ class EventAnalyzerService:
             for res in db.execute(rstmt).scalars().all():
                 resources_by_id[str(res.resource_id)] = res
 
-                                                                   
         features_df = self._prepare_features(events)
         feature_columns = [
             "event_count",
@@ -275,7 +269,6 @@ class EventAnalyzerService:
             "is_night",
         ]
 
-                               
         for event in events:
             entity_id = self._hybrid_entity_id(event)
             profile = profiles_by_id.get(str(entity_id))
@@ -283,7 +276,6 @@ class EventAnalyzerService:
             actor_arn = (event.actor_identity or "").strip()
             cloud_identity = identities_by_arn.get(actor_arn) if actor_arn else None
 
-                               
             violations: list[str] = []
             max_severity_val: int = 0
             skip_ml: bool = False
@@ -300,10 +292,8 @@ class EventAnalyzerService:
                 if rank > max_severity_val:
                     max_severity_val = rank
 
-                                                             
             if actor_arn:
                 if cloud_identity:
-                                                                    
                     if (
                         profile
                         and getattr(profile, "cloud_identity_id", None)
@@ -312,11 +302,9 @@ class EventAnalyzerService:
                         profile.cloud_identity_id = cloud_identity.id
                         db.add(profile)
                 else:
-                                                                                 
                     violations.append("SHADOW_IDENTITY")
                     update_max_severity("MEDIUM")
 
-                                   
             if profile and profile.whitelisted_cidrs:
                 whitelisted = self._ip_in_whitelisted_cidrs(
                     (event.actor_ip_address or "").strip(), profile.whitelisted_cidrs
@@ -325,13 +313,11 @@ class EventAnalyzerService:
                     violations.append("IP_VIOLATION")
                     update_max_severity("CRITICAL")
 
-                                                       
             if resource and resource.criticality == CloudResourceCriticality.CRITICAL:
                 if self._is_destructive_action(event.action_name or ""):
                     violations.append("CRITICAL_RESOURCE_TAMPERING")
                     update_max_severity("HIGH")
 
-                                         
             if profile:
                 if (event.action_name or "") in (
                     profile.manual_forbidden_actions or []
@@ -341,13 +327,30 @@ class EventAnalyzerService:
                 if (event.action_name or "") in (profile.manual_allowed_actions or []):
                     skip_ml = True
 
-                                  
+                event_hour = event.event_time.hour
+                is_night_time = event_hour <= 6 or event_hour >= 21
+                is_unusual_hour = event_hour not in (profile.auto_common_hours or [])
+                is_unusual_action = (event.action_name or "") not in (
+                    profile.auto_common_actions or []
+                )
+
+                if is_night_time and is_unusual_action:
+                    violations.append("PROFILE_DEVIATION_DETECTED")
+                    update_max_severity("MEDIUM")
+                elif (
+                    is_unusual_hour and is_unusual_action and profile.auto_common_hours
+                ):
+                    violations.append("PROFILE_DEVIATION_DETECTED")
+                    update_max_severity("LOW")
+                elif is_unusual_hour and profile.auto_common_hours:
+                    violations.append("MINOR_TIME_DEVIATION")
+                    update_max_severity("LOW")
+
             should_run_ml = False
             if not skip_ml:
                 if profile is None:
                     should_run_ml = True
                 else:
-                                                                               
                     should_run_ml = not self._auto_profile_allows(event, profile)
 
             if should_run_ml and self.model is not None and self.scaler is not None:
@@ -357,7 +360,6 @@ class EventAnalyzerService:
                     pd.to_datetime(window_start, utc=True),
                 )
                 if features_df.empty or idx_key not in features_df.index:
-                                                          
                     pass
                 else:
                     row = features_df.loc[idx_key]
@@ -372,9 +374,7 @@ class EventAnalyzerService:
                         violations.append("ML_ANOMALY_DETECTED")
                         update_max_severity("HIGH")
 
-                                         
             if violations:
-                                                      
                 val_to_label: dict[int, str] = {
                     1: "LOW",
                     2: "MEDIUM",
@@ -383,12 +383,10 @@ class EventAnalyzerService:
                 }
                 severity_label = val_to_label.get(max_severity_val, "LOW")
 
-                                                                                      
                 rule_code = (
                     "MULTIPLE_VIOLATIONS" if len(violations) > 1 else violations[0]
                 )
 
-                                              
                 target_id = (
                     resource.resource_id
                     if resource
@@ -407,7 +405,7 @@ class EventAnalyzerService:
                     description=description,
                     organization_id=organization_id,
                 )
-                                                       
+
                 if cloud_identity:
                     alert.cloud_identity_id = cloud_identity.id
                 created_alerts.append(alert)
@@ -424,12 +422,11 @@ class EventAnalyzerService:
                 "DB insert committed: SecurityAlert ids=%s",
                 [a.id for a in created_alerts],
             )
-                                                                               
+
             for a in created_alerts:
                 try:
                     payload = SecurityAlertOut.model_validate(a).model_dump(mode="json")
                 except Exception:
-                                                                         
                     created_at_val = getattr(a, "created_at", None)
                     created_at_str = (
                         created_at_val.isoformat()
@@ -459,11 +456,9 @@ class EventAnalyzerService:
                     loop = asyncio.get_running_loop()
                     loop.create_task(manager.broadcast(payload, organization_id))
                 except RuntimeError:
-                                                                                             
                     try:
                         asyncio.run(manager.broadcast(payload, organization_id))
                     except RuntimeError:
-                                                                                        
                         logger.debug("Skipping broadcast; no valid event loop context")
         else:
             logger.info("No alerts created for this batch")

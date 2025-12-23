@@ -38,7 +38,7 @@ class EventConsumer:
         """
         Initialize Kafka consumer for audit events and cloud identities.
         """
-                                     
+        # Allow environment overrides
         bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", bootstrap_servers)
         audit_topic = os.getenv("KAFKA_TOPIC", topic)
         identities_topic = os.getenv("KAFKA_IDENTITIES_TOPIC", "cloud_identities")
@@ -55,11 +55,11 @@ class EventConsumer:
             auto_offset_reset=auto_offset_reset,
             enable_auto_commit=enable_auto_commit,
         )
-                                                                     
+        # Reuse analyzer across messages to avoid reloading artifacts
         self._analyzer = EventAnalyzerService()
         self._running = False
-                                   
-                                                        
+        # Batch buffer and settings
+        # Buffer of (organization_id, GenericAuditEvent)
         self.batch: List[Tuple[UUID, GenericAuditEvent]] = []
         self.BATCH_SIZE: int = 50
         self.FLUSH_INTERVAL: float = 5.0
@@ -84,7 +84,7 @@ class EventConsumer:
                     )
                     logger.info("Created Kafka topics %s", to_create)
             except TopicAlreadyExistsError:
-                                                                     
+                # Benign race: topic appeared between list and create
                 logger.debug("Topic(s) already exist")
             except (KafkaConnectionError, KafkaError) as exc:
                 logger.warning(
@@ -201,7 +201,7 @@ class EventConsumer:
         try:
             identity_type = IdentityType[type_raw]
         except Exception:
-                                             
+            # Fallback to IAM_USER if unknown
             identity_type = IdentityType.IAM_USER
         is_mfa_enabled = bool(payload.get("is_mfa_enabled", False))
 
@@ -220,7 +220,6 @@ class EventConsumer:
 
         db = SessionLocal()
         try:
-                                                                  
             from sqlalchemy import select
 
             stmt = select(CloudIdentity).where(
@@ -232,7 +231,6 @@ class EventConsumer:
                 existing.identity_name = identity_name
                 existing.identity_type = identity_type
                 existing.is_mfa_enabled = is_mfa_enabled
-                                                                    
                 if created_at_dt and existing.created_at is None:
                     existing.created_at = created_at_dt
                 db.add(existing)
@@ -269,7 +267,7 @@ class EventConsumer:
         """
         Validate payload into domain model and buffer it for batch processing.
         """
-                                                                                                 
+        # Extract and validate organization_id directly from payload (required for multi-tenancy)
         org_raw = payload.get("organization_id")
         if not org_raw:
             logger.warning("Dropping payload without organization_id: %r", payload)
@@ -283,7 +281,7 @@ class EventConsumer:
             return
         event_dict = self._to_generic_event_payload(payload)
         event = GenericAuditEvent.model_validate(event_dict)
-                                                                                                         
+        # In batch mode we do not analyze per-message; buffer and let flush handle persistence + analysis
         self.batch.append((org_id, event))
 
     def _to_generic_event_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -291,13 +289,13 @@ class EventConsumer:
         Adapt various incoming payload shapes (e.g., AWS CloudTrail-like under 'raw')
         into the GenericAuditEvent dict expected by validation.
         """
-                                                                      
+        # Prefer nested 'raw' if present; otherwise use payload itself
         raw = payload.get("raw") if isinstance(payload, dict) else None
         raw = raw if isinstance(raw, dict) else payload
 
-                                                
+        # Helper getters with graceful fallbacks
         def _get_event_time() -> Any:
-                                              
+            # Accept existing normalized field
             v = (
                 payload.get("event_time")
                 or raw.get("event_time")
@@ -338,7 +336,7 @@ class EventConsumer:
             if "target_resource" in raw:
                 return raw.get("target_resource")
             req = raw.get("requestParameters") or {}
-                                   
+            # Try common AWS params
             bucket = req.get("bucketName") or req.get("bucket") or req.get("name")
             key = req.get("key") or req.get("objectKey")
             instance = (
@@ -351,7 +349,7 @@ class EventConsumer:
                 resource = f"s3://{bucket}"
             elif instance:
                 resource = str(instance)
-                                                           
+            # Fallback to event source/service if available
             if not resource:
                 resource = (
                     raw.get("eventSource") or req.get("resource") or req.get("groupId")
@@ -362,10 +360,10 @@ class EventConsumer:
             v = payload.get("event_status") or raw.get("event_status")
             if v:
                 return str(v)
-                                           
+            # Infer from typical AWS fields
             if raw.get("errorCode") or raw.get("errorMessage"):
                 return "FAILURE"
-                                                                    
+            # Some events include responseElements = None on failure
             if "responseElements" in raw and raw.get("responseElements") is None:
                 return "FAILURE"
             return "SUCCESS"
@@ -374,7 +372,7 @@ class EventConsumer:
             v = payload.get("cloud_provider") or raw.get("cloud_provider")
             if v:
                 return str(v)
-                                                        
+            # Heuristic: presence of AWS-specific fields
             aws_hints = (
                 "awsRegion",
                 "eventSource",
@@ -384,7 +382,7 @@ class EventConsumer:
             )
             if any(h in raw for h in aws_hints):
                 return "AWS"
-            return "AWS"           
+            return "AWS"
 
         def _get_event_id() -> str:
             return (
@@ -394,7 +392,7 @@ class EventConsumer:
                 or str(uuid4())
             )
 
-                                                     
+        # Build normalized dict for GenericAuditEvent
         normalized: Dict[str, Any] = {
             "event_id": _get_event_id(),
             "event_time": _get_event_time(),
@@ -403,13 +401,13 @@ class EventConsumer:
             "action_name": _get_action_name() or "",
             "target_resource": _get_target_resource() or "",
             "event_status": _get_event_status(),
-                                         
+            # Let Pydantic coerce to UUID
             "organization_id": payload.get("organization_id"),
             "cloud_provider": _get_cloud_provider(),
             "raw_log": raw if isinstance(raw, dict) else {"raw": raw},
         }
 
-                                                                                           
+        # If event_time is Unix epoch seconds, convert to ISO; otherwise let Pydantic parse
         et = normalized.get("event_time")
         if isinstance(et, (int, float)):
             try:
@@ -430,7 +428,7 @@ class EventConsumer:
             return
         db = SessionLocal()
         try:
-                                                                          
+            # Step 1: Persist all events (with per-record organization_id)
             orm_events: List[AuditEvent] = []
             for org_id, e in self.batch:
                 orm_events.append(
@@ -451,7 +449,7 @@ class EventConsumer:
             if orm_events:
                 db.bulk_save_objects(orm_events)
 
-                                                       
+            # Step 2: Group by organization and analyze
             org_to_events: Dict[UUID, List[GenericAuditEvent]] = {}
             for org_id, e in self.batch:
                 org_to_events.setdefault(org_id, []).append(e)
@@ -466,7 +464,7 @@ class EventConsumer:
                         exc,
                     )
 
-                            
+            # Step 3: Commit
             db.commit()
             logger.info(
                 "Flushed %d events to audit_events and committed.", len(self.batch)
@@ -482,16 +480,16 @@ class EventConsumer:
                 db.close()
             except Exception:
                 pass
-                                             
+        # Clear buffer and update flush timer
         self.batch.clear()
         self._last_flush_time = time.monotonic()
 
     async def start(self) -> None:
-                                                                      
+        # Best-effort ensure topic exists before starting the consumer
         try:
             await self._ensure_topic_exists()
         except Exception as exc:
-                                                                                              
+            # Non-fatal: consumer may still start if broker allows auto-create or topic exists
             logger.debug("Continuing without ensuring topic due to: %s", exc)
         await self._consumer.start()
         self._running = True
@@ -513,7 +511,7 @@ class EventConsumer:
         try:
             while True:
                 try:
-                                                                      
+                    # Poll multiple messages without blocking too long
                     messages_map = await self._consumer.getmany(timeout_ms=1000)
                 except asyncio.CancelledError:
                     raise
@@ -522,7 +520,7 @@ class EventConsumer:
                     await asyncio.sleep(1.0)
                     continue
 
-                                          
+                # Process fetched messages
                 total_received = 0
                 for tp, messages in messages_map.items():
                     for msg in messages:
@@ -536,10 +534,10 @@ class EventConsumer:
                             if payload is None:
                                 continue
                             if getattr(msg, "topic", "") == self._identities_topic:
-                                                                            
+                                # Identity upsert is immediate (not batched)
                                 self._upsert_cloud_identity(payload)
                             else:
-                                              
+                                # Buffer event
                                 self._process_payload(None, payload)
                         except json.JSONDecodeError as exc:
                             logger.warning(
@@ -550,14 +548,14 @@ class EventConsumer:
                         except Exception as exc:
                             logger.exception("Failed to process message: %s", exc)
 
-                                                    
+                # Decide flush based on size or time
                 now = time.monotonic()
                 if (
                     len(self.batch) >= self.BATCH_SIZE
                     or (now - self._last_flush_time) >= self.FLUSH_INTERVAL
                 ):
                     self._flush()
-                                                                                                      
+                # If no messages arrived but interval passed and there is buffered data, flush as well
                 elif (
                     total_received == 0
                     and self.batch
@@ -566,7 +564,6 @@ class EventConsumer:
                     self._flush()
         except asyncio.CancelledError:
             logger.info("consume_loop cancelled; stopping consumer.")
-                                             
             try:
                 self._flush()
             except Exception:
@@ -574,7 +571,7 @@ class EventConsumer:
             await self.stop()
         except Exception as exc:
             logger.exception("Fatal error in consume_loop: %s", exc)
-                                     
+            # Best-effort final flush
             try:
                 self._flush()
             except Exception:

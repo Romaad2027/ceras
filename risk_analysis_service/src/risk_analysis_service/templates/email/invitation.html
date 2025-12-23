@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Invitation to Ceras Security</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 600px;
+            margin: 40px auto;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .content h2 {
+            color: #333;
+            font-size: 24px;
+            margin-top: 0;
+            margin-bottom: 20px;
+        }
+        .content p {
+            color: #555;
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+        .org-name {
+            font-weight: 600;
+            color: #667eea;
+        }
+        .button-container {
+            text-align: center;
+            margin: 35px 0;
+        }
+        .button {
+            display: inline-block;
+            padding: 14px 35px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 16px;
+            transition: transform 0.2s;
+        }
+        .button:hover {
+            transform: translateY(-2px);
+        }
+        .footer {
+            background-color: #f8f9fa;
+            padding: 25px 30px;
+            text-align: center;
+            border-top: 1px solid #e9ecef;
+        }
+        .footer p {
+            margin: 5px 0;
+            color: #6c757d;
+            font-size: 14px;
+        }
+        .expiry-notice {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 25px 0;
+            border-radius: 4px;
+        }
+        .expiry-notice p {
+            margin: 0;
+            color: #856404;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔐 Ceras Security</h1>
+        </div>
+        <div class="content">
+            <h2>You've been invited!</h2>
+            <p>Hello!</p>
+            <p>You have been invited to join the organization <span class="org-name">{{ org_name }}</span> on Ceras Security.</p>
+            <p>Ceras Security helps organizations monitor and manage their cloud security posture with real-time risk analysis and anomaly detection.</p>
+            
+            <div class="button-container">
+                <a href="{{ link }}" class="button">Accept Invitation</a>
+            </div>
+            
+            <div class="expiry-notice">
+                <p>⏰ This invitation link expires in 48 hours.</p>
+            </div>
+            
+            <p>If you didn't expect this invitation, you can safely ignore this email.</p>
+        </div>
+        <div class="footer">
+            <p>&copy; 2024 Ceras Security. All rights reserved.</p>
+            <p>Secure your cloud infrastructure with confidence.</p>
+        </div>
+    </div>
+</body>
+</html>

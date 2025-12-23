@@ -23,6 +23,7 @@ async def analyze_resource_endpoint(
     """
     logger.info(
         "POST /analyze/resource received: id=%s type=%s",
+        resource.account_id,
         resource.resource_id,
         resource.resource_type,
     )
