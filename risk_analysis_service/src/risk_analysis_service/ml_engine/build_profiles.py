@@ -1,6 +1,7 @@
 import os
 import logging
 from typing import Dict, List, Any, Optional
+from uuid import UUID
 
 import pandas as pd
 from sqlalchemy import create_engine, text, func
@@ -23,8 +24,8 @@ def _get_engine() -> Engine:
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         return create_engine(database_url)
-                                                                           
-    from ..db.session import engine as app_engine                
+
+    from ..db.session import engine as app_engine
 
     return app_engine
 
@@ -47,9 +48,9 @@ def _cumulative_top(values: pd.Series, threshold: float) -> List[Any]:
     if counts.empty:
         return []
     csum = counts.cumsum()
-                                                                                             
+
     cutoff_idx = (csum >= threshold).idxmax()
-                                          
+
     upto = list(counts.index[: counts.index.get_loc(cutoff_idx) + 1])
     return upto
 
@@ -70,9 +71,23 @@ def _compute_entity_id(df: pd.DataFrame) -> pd.Series:
     return actor_identity.fillna(actor_ip)
 
 
-def _load_events_df(engine: Engine, days: Optional[int]) -> pd.DataFrame:
+def _load_events_df(
+    engine: Engine,
+    organization_id: UUID,
+    days: Optional[int],
+    cloud_account_id: Optional[UUID] = None,
+) -> pd.DataFrame:
     """
-    Load audit events for the specified lookback window.
+    Load audit events for the specified organization, optional cloud account, and lookback window.
+
+    Args:
+        engine: SQLAlchemy engine
+        organization_id: Filter events by this organization
+        days: Lookback window in days (None = all history)
+        cloud_account_id: Optional filter by specific cloud account
+
+    Returns:
+        DataFrame with columns: event_time, actor_identity, actor_ip_address, action_name
     """
     base_query = """
         SELECT
@@ -81,18 +96,21 @@ def _load_events_df(engine: Engine, days: Optional[int]) -> pd.DataFrame:
             actor_ip_address,
             action_name
         FROM audit_events
+        WHERE organization_id = :org_id
     """
-    params: Dict[str, Any] = {}
+    params: Dict[str, Any] = {"org_id": str(organization_id)}
+
+    if cloud_account_id:
+        base_query += " AND cloud_account_id = :account_id"
+        params["account_id"] = str(cloud_account_id)
+
     if days and days > 0:
-        query = base_query + " WHERE event_time >= NOW() - INTERVAL :days_str"
-                                                            
+        base_query += " AND event_time >= NOW() - INTERVAL :days_str"
         params["days_str"] = f"{int(days)} days"
-    else:
-        query = base_query
 
     with engine.connect() as conn:
-        df = pd.read_sql_query(text(query), conn, params=params)
-                           
+        df = pd.read_sql_query(text(base_query), conn, params=params)
+
     if "event_time" in df.columns and not pd.api.types.is_datetime64_any_dtype(
         df["event_time"]
     ):
@@ -101,30 +119,51 @@ def _load_events_df(engine: Engine, days: Optional[int]) -> pd.DataFrame:
 
 
 def build_profiles(
-    threshold: float = THRESHOLD, days: int = DEFAULT_LOOKBACK_DAYS
+    organization_id: UUID,
+    threshold: float = THRESHOLD,
+    days: int = DEFAULT_LOOKBACK_DAYS,
+    cloud_account_id: Optional[UUID] = None,
 ) -> Dict[str, Dict[str, List[Any]]]:
     """
     Build statistically grounded behavior profiles per hybrid entity_id.
 
-    Returns a dictionary mapping:
-      entity_id -> {
-        "common_hours": [int, ...],
-        "common_ips": [str, ...],
-        "common_actions": [str, ...],
-      }
+    Args:
+        organization_id: Build profiles for this organization (required)
+        threshold: Cumulative frequency threshold for pattern detection (default: 0.8)
+        days: Lookback window in days (default: 30)
+        cloud_account_id: Optional filter for specific cloud account
+
+    Returns:
+        Dictionary mapping entity_id -> {
+            "common_hours": [int, ...],
+            "common_ips": [str, ...],
+            "common_actions": [str, ...],
+        }
+
+    Example:
+        # Build profiles for all accounts in an organization
+        profiles = build_profiles(org_id)
+
+        # Build profiles for specific cloud account only
+        profiles = build_profiles(org_id, cloud_account_id=account_id)
+
+        # Custom threshold and lookback window
+        profiles = build_profiles(org_id, threshold=0.9, days=14)
     """
     engine = _get_engine()
-    df = _load_events_df(engine, days=days)
+    df = _load_events_df(engine, organization_id, days, cloud_account_id)
     if df.empty:
+        logger.warning(
+            "No audit events found for organization_id=%s, cloud_account_id=%s",
+            organization_id,
+            cloud_account_id,
+        )
         return {}
 
-                     
     df["entity_id"] = _compute_entity_id(df)
     df = df.dropna(subset=["entity_id"])
 
-                                            
     if "event_time" in df.columns:
-                                                      
         df["event_time"] = pd.to_datetime(df["event_time"], utc=True, errors="coerce")
         df["hour"] = df["event_time"].dt.hour
     else:
@@ -137,7 +176,6 @@ def build_profiles(
             common_ips_idx = _cumulative_top(g["actor_ip_address"], threshold)
             common_actions_idx = _cumulative_top(g["action_name"], threshold)
 
-                                                    
             common_hours: List[int] = [int(h) for h in common_hours_idx if pd.notna(h)]
             common_ips: List[str] = [str(ip) for ip in common_ips_idx]
             common_actions: List[str] = [str(a) for a in common_actions_idx]
@@ -153,12 +191,11 @@ def build_profiles(
             )
             continue
 
-                                                  
     if profiles:
         rows = [
             {
                 "entity_id": eid,
-                                                                         
+                "organization_id": str(organization_id),
                 "auto_common_hours": prof.get("common_hours", []),
                 "auto_common_ips": prof.get("common_ips", []),
                 "auto_common_actions": prof.get("common_actions", []),
@@ -179,9 +216,96 @@ def build_profiles(
         with engine.begin() as conn:
             conn.execute(upsert_stmt)
 
+        logger.info(
+            "Upserted %d entity profiles for organization_id=%s, cloud_account_id=%s",
+            len(profiles),
+            organization_id,
+            cloud_account_id,
+        )
+
     return profiles
 
 
 if __name__ == "__main__":
-    profiles_dict = build_profiles()
-    print(f"Built {len(profiles_dict)} profiles and upserted into DB")
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Build entity behavioral profiles from audit events",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Build profiles for an organization (last 30 days)
+  python -m risk_analysis_service.ml_engine.build_profiles --org-id abc123...
+
+  # Build profiles for specific cloud account only
+  python -m risk_analysis_service.ml_engine.build_profiles \\
+      --org-id abc123... --account-id def456...
+
+  # Custom threshold and lookback window
+  python -m risk_analysis_service.ml_engine.build_profiles \\
+      --org-id abc123... --threshold 0.9 --days 14
+        """,
+    )
+
+    parser.add_argument(
+        "--org-id",
+        "--organization-id",
+        dest="organization_id",
+        required=True,
+        help="Organization ID (UUID) to build profiles for",
+    )
+    parser.add_argument(
+        "--account-id",
+        "--cloud-account-id",
+        dest="cloud_account_id",
+        default=None,
+        help="Optional: Cloud account ID (UUID) to filter by",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=THRESHOLD,
+        help=f"Cumulative frequency threshold (default: {THRESHOLD})",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_LOOKBACK_DAYS,
+        help=f"Lookback window in days (default: {DEFAULT_LOOKBACK_DAYS})",
+    )
+
+    args = parser.parse_args()
+
+    # Validate and parse UUIDs
+    try:
+        org_id = UUID(args.organization_id)
+        account_id = UUID(args.cloud_account_id) if args.cloud_account_id else None
+    except ValueError as e:
+        print(f"Error: Invalid UUID format - {e}")
+        exit(1)
+
+    # Validate threshold
+    if args.threshold <= 0 or args.threshold > 1:
+        print("Error: threshold must be between 0 and 1")
+        exit(1)
+
+    # Validate days
+    if args.days < 1:
+        print("Error: days must be at least 1")
+        exit(1)
+
+    # Build profiles
+    print(f"Building profiles for organization: {org_id}")
+    if account_id:
+        print(f"  Cloud account filter: {account_id}")
+    print(f"  Lookback window: {args.days} days")
+    print(f"  Threshold: {args.threshold}")
+    print()
+
+    profiles_dict = build_profiles(
+        organization_id=org_id,
+        threshold=args.threshold,
+        days=args.days,
+        cloud_account_id=account_id,
+    )
+    print(f"\n✅ Built {len(profiles_dict)} profiles and upserted into DB")

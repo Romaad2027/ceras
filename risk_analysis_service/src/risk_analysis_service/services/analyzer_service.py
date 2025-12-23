@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models.risk import Risk
 from ..db.models.cloud_resource import CloudResource
+from ..db.models.cloud_account import CloudAccount
 from ..schemas import risk as risk_schemas
 from ..schemas.cloud_resource import GenericCloudResource, ResourceType
 from ..rules.s3_rules import STORAGE_BUCKET_RULES
@@ -26,13 +27,36 @@ def analyze_and_save_risks(db: Session, resource: GenericCloudResource) -> list[
     """
     found_risks: list[risk_schemas.RiskCreate] = []
 
-                                                                   
     resource_name = resource.configuration.get("bucket_name") or resource.resource_id
 
-                                            
+    logger.info(resource)
     db_cloud_resource = db.get(CloudResource, resource.resource_id)
     if db_cloud_resource is None:
-        raise ValueError(f"CloudResource not found for id={resource.resource_id}")
+        cloud_account = (
+            db.query(CloudAccount)
+            .filter(CloudAccount.id == resource.account_id)
+            .first()
+        )
+        if cloud_account is None:
+            raise ValueError(
+                f"CloudResource not found and CloudAccount not resolvable for account_id={resource.account_id}"
+            )
+        if resource.resource_type == ResourceType.STORAGE_BUCKET:
+            model_resource_type = "s3"
+        else:
+            model_resource_type = str(resource.resource_type).lower()
+        db_cloud_resource = CloudResource(
+            resource_id=resource.resource_id,
+            organization_id=cloud_account.organization_id,
+            cloud_account_id=cloud_account.id,
+            resource_name=resource_name,
+            resource_type=model_resource_type,
+            custom_rules={},
+        )
+        db.add(db_cloud_resource)
+        db.commit()
+        db.refresh(db_cloud_resource)
+
     org_id = db_cloud_resource.organization_id
 
     if resource.resource_type == ResourceType.STORAGE_BUCKET:
@@ -53,7 +77,7 @@ def analyze_and_save_risks(db: Session, resource: GenericCloudResource) -> list[
                             resource_id=resource.resource_id,
                         )
                     )
-            except Exception as exc:                              
+            except Exception as exc:
                 logger.exception(
                     "Rule %s failed: %s",
                     getattr(rule, "code", type(rule).__name__),

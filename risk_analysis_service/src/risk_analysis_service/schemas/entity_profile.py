@@ -22,7 +22,6 @@ class EntityProfileUpdate(BaseModel):
         if value is None:
             return value
         for cidr in value:
-                                                        
             try:
                 ipaddress.ip_network(cidr, strict=False)
             except Exception as exc:
@@ -39,4 +38,7 @@ class EntityProfileResponse(BaseModel):
     whitelisted_cidrs: List[str]
     manual_allowed_actions: List[str]
     manual_forbidden_actions: List[str]
+    auto_common_hours: Optional[List[int]] = None
+    auto_common_ips: Optional[List[str]] = None
+    auto_common_actions: Optional[List[str]] = None
     profile_mode: ProfileMode

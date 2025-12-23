@@ -49,19 +49,17 @@ def preprocess_and_aggregate(file_path: Optional[str] = None) -> pd.DataFrame:
     df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce")
     df = df.dropna(subset=["event_time"])
 
-                                                                          
     for required_col in ["actor_identity", "actor_ip_address", "action_name"]:
         if required_col not in df.columns:
             df[required_col] = np.nan
-                                                                          
+
     if "status" in df.columns and df["status"].notna().any():
-        pass                  
+        pass
     elif "event_status" in df.columns:
         df["status"] = df["event_status"]
     else:
         df["status"] = np.nan
 
-                                                                        
     identity_series = df["actor_identity"].astype(str).str.strip()
     invalid_identity_values = {"", "nan", "none", "anonymous", "unknown"}
     is_valid_identity = df[
@@ -74,14 +72,12 @@ def preprocess_and_aggregate(file_path: Optional[str] = None) -> pd.DataFrame:
     )
     df["entity_id"] = entity_id
 
-                                    
     status_series = df["status"].astype(str).str.strip().str.upper()
     df["is_failure"] = status_series.eq("FAILURE")
 
     action_series = df["action_name"].astype(str).str.strip().str.lower()
     df["is_critical_action"] = action_series.str.startswith(("delete", "terminate"))
 
-                                           
     grouped = df.groupby([pd.Grouper(key="event_time", freq="1h"), "entity_id"])
 
     features = grouped.agg(
@@ -91,12 +87,10 @@ def preprocess_and_aggregate(file_path: Optional[str] = None) -> pd.DataFrame:
         critical_actions_count=("is_critical_action", "sum"),
     )
 
-                                             
     window_hours = features.index.get_level_values(0).hour
     is_night = ((window_hours <= 6) | (window_hours >= 21)).astype(int)
     features = features.assign(is_night=is_night)
 
-                               
     features.index.set_names(["event_time", "entity_id"], inplace=True)
     return features
 
@@ -120,9 +114,11 @@ def train_and_save_model(
     scaled_values = scaler.fit_transform(features_df.values)
 
     model = IsolationForest(
-        n_estimators=100,
-        contamination=0.05,
+        n_estimators=200,
+        contamination=0.10,
+        max_samples="auto",
         random_state=42,
+        bootstrap=True,
     )
     model.fit(scaled_values)
 
@@ -139,8 +135,21 @@ def train_and_save_model(
 
 
 if __name__ == "__main__":
+    import sys
+
+    # Check for command line argument
+    data_file = None
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ["-h", "--help"]:
+            print("Usage: python train_model.py [data_file.csv]")
+            print("  data_file.csv: Optional path to training data CSV")
+            sys.exit(0)
+        data_file = sys.argv[1]
+
     print("Starting preprocessing and aggregation...")
-    aggregated_df = preprocess_and_aggregate()
+    if data_file:
+        print(f"Using training data: {data_file}")
+    aggregated_df = preprocess_and_aggregate(data_file)
     print(f"Aggregated feature shape: {aggregated_df.shape}")
 
     print("Training IsolationForest model and saving artifacts...")
