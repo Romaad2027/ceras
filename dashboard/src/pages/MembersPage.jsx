@@ -44,6 +44,19 @@ const formatDateTime = (value) => {
   return d.toLocaleString()
 }
 
+const decodeJwt = (token) => {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null
+  try {
+    const base64Url = token.split('.')[1]
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = base64.padEnd(base64.length + (4 - (base64.length % 4)) % 4, '=')
+    const json = atob(padded)
+    return JSON.parse(json)
+  } catch (_) {
+    return null
+  }
+}
+
 export const MembersPage = () => {
   const [members, setMembers] = useState([])
   const [invites, setInvites] = useState([])
@@ -56,6 +69,7 @@ export const MembersPage = () => {
   const [inviteRole, setInviteRole] = useState('member')
   const [sendingInvite, setSendingInvite] = useState(false)
   const [revokingId, setRevokingId] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
   const [toast, setToast] = useState(null)
 
   const showToast = (type, message) => {
@@ -63,6 +77,27 @@ export const MembersPage = () => {
     window.clearTimeout(showToast._t)
     showToast._t = window.setTimeout(() => setToast(null), 2200)
   }
+
+  const token = (typeof window !== 'undefined' && window.localStorage && localStorage.getItem('token')) || ''
+  const claims = useMemo(() => decodeJwt(token), [token])
+  const currentUserId = claims?.sub || claims?.user_id || claims?.uid || null
+  const currentUserEmail = claims?.email || claims?.preferred_username || null
+  const you = useMemo(() => {
+    if (!members || members.length === 0) return null
+    const byId = members.find(
+      (m) => String(m?.id || m?.user_id || '') && String(m?.id || m?.user_id) === String(currentUserId || '')
+    )
+    if (byId) return byId
+    if (currentUserEmail) {
+      const emailLc = String(currentUserEmail).toLowerCase()
+      return members.find((m) => String(m?.email || '').toLowerCase() === emailLc) || null
+    }
+    return null
+  }, [members, currentUserId, currentUserEmail])
+  const isAdmin = useMemo(() => {
+    const role = (you?.role || you?.user_role || '').toString().toLowerCase()
+    return role === 'admin'
+  }, [you])
 
   const fetchMembers = async () => {
     try {
@@ -127,6 +162,36 @@ export const MembersPage = () => {
     }
   }
 
+  const handleDeleteMember = async (member) => {
+    const id = member?.id || member?.user_id
+    if (!id) {
+      showToast('error', 'User ID not found.')
+      return
+    }
+    // prevent self-removal in UI as well
+    const isSelf =
+      (currentUserId && String(id) === String(currentUserId)) ||
+      (!!currentUserEmail &&
+        String(member?.email || '').toLowerCase() === String(currentUserEmail).toLowerCase())
+    if (isSelf) {
+      showToast('error', 'You cannot remove yourself.')
+      return
+    }
+    const label = member?.email || member?.name || 'this user'
+    const ok = window.confirm(`Remove ${label} from the organization?`)
+    if (!ok) return
+    try {
+      setDeletingId(id)
+      await organizationApi.removeUser(id)
+      showToast('success', `Removed ${member?.email || 'user'}`)
+      await fetchMembers()
+    } catch (err) {
+      showToast('error', err?.response?.data?.detail || err?.response?.data?.message || 'Failed to remove user.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
     const init = async () => {
@@ -187,8 +252,42 @@ export const MembersPage = () => {
           <Badge variant={val === 'Active' ? 'success' : 'default'}>{val}</Badge>
         ),
       },
+      {
+        header: 'Actions',
+        accessor: () => '',
+        cell: (_v, row) => {
+          const id = row?.id || row?.user_id
+          const isSelf =
+            (currentUserId && String(id) === String(currentUserId)) ||
+            (!!currentUserEmail &&
+              String(row?.email || '').toLowerCase() === String(currentUserEmail).toLowerCase())
+          const canDelete = isAdmin && !!id && !isSelf
+          return (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={!canDelete}
+                isLoading={deletingId === id}
+                onClick={() => handleDeleteMember(row)}
+                title={
+                  !id
+                    ? 'Delete not available'
+                    : !isAdmin
+                    ? 'Only admins can delete members'
+                    : isSelf
+                    ? 'You cannot remove yourself'
+                    : 'Remove user'
+                }
+              >
+                Delete
+              </Button>
+            </div>
+          )
+        },
+      },
     ],
-    []
+    [deletingId, isAdmin, currentUserId, currentUserEmail]
   )
 
   const inviteColumns = useMemo(

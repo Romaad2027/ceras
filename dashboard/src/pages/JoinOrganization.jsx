@@ -85,6 +85,7 @@ export const JoinOrganization = ({ onSuccess }) => {
       if (t) {
         localStorage.setItem('token', t)
         localStorage.setItem('token_type', tt)
+        if (email) localStorage.setItem('user_email', email)
         setMessage('Registration completed. Redirecting…')
         onSuccess && onSuccess(t, tt)
       } else {

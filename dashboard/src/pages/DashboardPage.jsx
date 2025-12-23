@@ -6,6 +6,7 @@ import { Button } from '../components/ui/Button.jsx'
 import { Badge } from '../components/ui/Badge.jsx'
 import { Table } from '../components/ui/Table.jsx'
 import { Input } from '../components/ui/Input.jsx'
+import { Modal, ModalFooter } from '../components/ui/Modal.jsx'
 
 const normalizeSeverity = (value) => {
   const sev = (value || '').toString().trim().toUpperCase()
@@ -66,6 +67,8 @@ export const DashboardPage = () => {
   const [search, setSearch] = useState('')
   const [createdFrom, setCreatedFrom] = useState('')
   const [createdTo, setCreatedTo] = useState('')
+  const [selectedAlert, setSelectedAlert] = useState(null)
+  const [isModalOpen, setIsModalOpen] = useState(false)
 
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
   const { alerts: liveAlerts } = useAlertsSocket(token)
@@ -271,6 +274,183 @@ export const DashboardPage = () => {
 
   const emptyMessage = "All systems operational. No alerts to show."
 
+  const handleRowClick = (alert) => {
+    setSelectedAlert(alert)
+    setIsModalOpen(true)
+  }
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false)
+    setTimeout(() => setSelectedAlert(null), 200)
+  }
+
+  const renderAlertDetailsModal = () => {
+    if (!selectedAlert) return null
+
+    const severity = normalizeSeverity(selectedAlert.severity || selectedAlert.level || selectedAlert.priority)
+    const status = getAlertStatus(selectedAlert)
+    const timestamp = getAlertTimeFormatted(selectedAlert)
+    const ruleCode = selectedAlert.rule_code || selectedAlert.ruleCode || selectedAlert.rule || selectedAlert.code || '—'
+    const description = selectedAlert.description || selectedAlert.message || selectedAlert.details || selectedAlert.text || 'No description available'
+    
+    // Extract additional fields
+    const entityId = selectedAlert.entity_id || selectedAlert.entityId || selectedAlert.identity_id || selectedAlert.identityId || '—'
+    const entityName = selectedAlert.entity_name || selectedAlert.entityName || selectedAlert.identity_name || selectedAlert.identityName || '—'
+    const accountId = selectedAlert.cloud_account_id || selectedAlert.cloudAccountId || selectedAlert.account_id || selectedAlert.accountId || '—'
+    const region = selectedAlert.region || selectedAlert.aws_region || '—'
+    const resourceType = selectedAlert.resource_type || selectedAlert.resourceType || '—'
+    const sourceIp = selectedAlert.source_ip || selectedAlert.sourceIp || selectedAlert.ip_address || '—'
+    const eventName = selectedAlert.event_name || selectedAlert.eventName || '—'
+    const anomalyScore = selectedAlert.anomaly_score || selectedAlert.anomalyScore || selectedAlert.score
+    const impactDescription = selectedAlert.impact || selectedAlert.risk_description || selectedAlert.riskDescription || ''
+    const recommendation = selectedAlert.recommendation || selectedAlert.remediation || ''
+    
+    // Additional context
+    const metadata = selectedAlert.metadata || selectedAlert.context || selectedAlert.additional_data || {}
+    const tags = selectedAlert.tags || []
+
+    const severityVariant = severity === 'CRITICAL' || severity === 'HIGH' ? 'error' : severity === 'MEDIUM' ? 'warning' : severity === 'LOW' ? 'success' : 'info'
+    const statusVariant = status === 'RESOLVED' ? 'success' : status === 'IN_PROGRESS' ? 'info' : 'warning'
+
+    return (
+      <Modal
+        isOpen={isModalOpen}
+        onClose={handleCloseModal}
+        title="Risk Alert Details"
+        size="lg"
+      >
+        <div className="space-y-6">
+          {/* Alert Header */}
+          <div className="flex items-start justify-between gap-4 pb-4 border-b border-outline-variant">
+            <div className="flex-1">
+              <div className="flex items-center gap-3 mb-2">
+                <Badge variant={severityVariant} className="text-base px-3 py-1">
+                  {severity}
+                </Badge>
+                <Badge variant={statusVariant}>
+                  {status}
+                </Badge>
+              </div>
+              <h3 className="text-lg font-semibold text-surface-foreground mb-1">
+                {ruleCode}
+              </h3>
+              <p className="text-sm text-[var(--md-sys-color-on-surface-variant)]">
+                {timestamp}
+              </p>
+            </div>
+          </div>
+
+          {/* Alert Details */}
+          <div>
+            <h4 className="text-sm font-semibold text-surface-foreground mb-3 uppercase tracking-wide">
+              Alert Information
+            </h4>
+            <div className="space-y-3">
+              {/* Description */}
+              {description && description !== 'No description available' && (
+                <div className="bg-[var(--md-sys-color-surface-container)] p-4 rounded-lg">
+                  <div className="text-xs font-medium text-[var(--md-sys-color-on-surface-variant)] mb-2 uppercase tracking-wide">
+                    Description
+                  </div>
+                  <p className="text-sm text-surface-foreground leading-relaxed">
+                    {description}
+                  </p>
+                </div>
+              )}
+
+              {/* Key Details Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {entityId !== '—' && <InfoItem label="Entity ID" value={entityId} />}
+                {entityName !== '—' && <InfoItem label="Entity Name" value={entityName} />}
+                {accountId !== '—' && <InfoItem label="Account ID" value={accountId} />}
+                {region !== '—' && <InfoItem label="Region" value={region} />}
+                {resourceType !== '—' && <InfoItem label="Resource Type" value={resourceType} />}
+                {sourceIp !== '—' && <InfoItem label="Source IP" value={sourceIp} />}
+                {eventName !== '—' && <InfoItem label="Event Name" value={eventName} />}
+                {anomalyScore !== undefined && anomalyScore !== null && (
+                  <InfoItem 
+                    label="Anomaly Score" 
+                    value={typeof anomalyScore === 'number' ? anomalyScore.toFixed(3) : anomalyScore}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Impact Assessment */}
+          {impactDescription && (
+            <div>
+              <h4 className="text-sm font-semibold text-surface-foreground mb-2 uppercase tracking-wide">
+                Impact Assessment
+              </h4>
+              <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 p-4 rounded-lg">
+                <p className="text-sm text-surface-foreground leading-relaxed">
+                  {impactDescription}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Recommendation */}
+          {recommendation && (
+            <div>
+              <h4 className="text-sm font-semibold text-surface-foreground mb-2 uppercase tracking-wide">
+                Recommended Actions
+              </h4>
+              <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 p-4 rounded-lg">
+                <p className="text-sm text-surface-foreground leading-relaxed">
+                  {recommendation}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Tags */}
+          {Array.isArray(tags) && tags.length > 0 && (
+            <div>
+              <h4 className="text-sm font-semibold text-surface-foreground mb-2 uppercase tracking-wide">
+                Tags
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {tags.map((tag, idx) => (
+                  <span
+                    key={idx}
+                    className="px-3 py-1 text-xs rounded-full bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Additional Metadata */}
+          {Object.keys(metadata).length > 0 && (
+            <div>
+              <h4 className="text-sm font-semibold text-surface-foreground mb-3 uppercase tracking-wide">
+                Additional Context
+              </h4>
+              <div className="bg-[var(--md-sys-color-surface-container)] p-4 rounded-lg">
+                <pre className="text-xs text-surface-foreground overflow-x-auto">
+                  {JSON.stringify(metadata, null, 2)}
+                </pre>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <ModalFooter>
+          <Button variant="secondary" onClick={handleCloseModal}>
+            Close
+          </Button>
+          <Button variant="primary">
+            Mark as Resolved
+          </Button>
+        </ModalFooter>
+      </Modal>
+    )
+  }
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -417,6 +597,7 @@ export const DashboardPage = () => {
             columns={columns}
             data={paginatedAlerts}
             emptyMessage={emptyMessage}
+            onRowClick={handleRowClick}
           />
           {error && <div className="mt-3 text-sm text-error">{error}</div>}
           {showToast && lastNewAlert && (
@@ -464,9 +645,23 @@ export const DashboardPage = () => {
           </div>
         </CardContent>
       </Card>
+
+      {/* Risk Alert Details Modal */}
+      {renderAlertDetailsModal()}
     </div>
   )
 }
+
+const InfoItem = ({ label, value }) => (
+  <div className="bg-[var(--md-sys-color-surface-container)] p-3 rounded-lg">
+    <div className="text-xs font-medium text-[var(--md-sys-color-on-surface-variant)] mb-1 uppercase tracking-wide">
+      {label}
+    </div>
+    <div className="text-sm font-medium text-surface-foreground break-all">
+      {value}
+    </div>
+  </div>
+)
 
 export default DashboardPage
 

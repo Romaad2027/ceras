@@ -21,6 +21,7 @@ export const LoginPage = () => {
       if (!token) throw new Error('Token not found in response')
       localStorage.setItem('token', token)
       if (tokenType) localStorage.setItem('token_type', tokenType)
+      localStorage.setItem('user_email', email)
       navigate('/', { replace: true })
     } catch (err) {
       setError(err?.response?.data?.message || err?.message || 'Login failed')

@@ -78,6 +78,7 @@ export const RegisterTenant = ({ onSuccess, onCancel }) => {
       if (token) {
         localStorage.setItem('token', token)
         localStorage.setItem('token_type', tokenType)
+        localStorage.setItem('user_email', adminEmail)
         setMessage('Organization created. Redirecting…')
         onSuccess && onSuccess(token, tokenType)
       } else {
